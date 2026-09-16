@@ -42,6 +42,17 @@ export const documents = mysqlTable("documents", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const documentChunks = mysqlTable("documentChunks", {
+  id: int("id").autoincrement().primaryKey(),
+  documentId: int("documentId").notNull(),
+  workspaceId: int("workspaceId").notNull(),
+  chunkIndex: int("chunkIndex").notNull(),
+  content: text("content").notNull(),
+  embeddingJson: text("embeddingJson").notNull(),
+  tokenCount: int("tokenCount").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export const messages = mysqlTable("messages", {
   id: int("id").autoincrement().primaryKey(),
   conversationId: int("conversationId").notNull(),
@@ -78,6 +89,7 @@ export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type Conversation = typeof conversations.$inferSelect;
 export type Document = typeof documents.$inferSelect;
+export type DocumentChunk = typeof documentChunks.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Feedback = typeof feedback.$inferSelect;
 export type EvaluationRun = typeof evaluationRuns.$inferSelect;

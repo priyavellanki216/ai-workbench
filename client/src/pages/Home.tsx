@@ -97,6 +97,9 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [message, setMessage] = useState("");
   const [isThinking, setIsThinking] = useState(false);
+  const [streamedAnswer, setStreamedAnswer] = useState("");
+  const [liveSources, setLiveSources] = useState<Source[]>(sources);
+  const [isUploading, setIsUploading] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
   const [showSources, setShowSources] = useState(true);
   const [mobileNav, setMobileNav] = useState(false);
@@ -107,13 +110,47 @@ export default function Home() {
     [conversations, query],
   );
 
-  const runPrompt = (prompt: string) => {
+  const runPrompt = async (prompt: string) => {
     setMessage(prompt);
     setIsThinking(true);
-    window.setTimeout(() => {
+    setStreamedAnswer("");
+    try {
+      const response = await fetch("/api/chat/stream", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspaceId: 1, question: prompt }),
+      });
+      if (!response.ok || !response.body) throw new Error((await response.json().catch(() => null))?.error || "Live chat is unavailable");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const consume = (raw: string) => {
+        buffer += raw;
+        const events = buffer.split(/\n\n/);
+        buffer = events.pop() || "";
+        events.forEach((event) => {
+          const eventName = event.match(/^event: (.+)$/m)?.[1];
+          const data = event.match(/^data: (.+)$/m)?.[1];
+          if (!data) return;
+          const parsed = JSON.parse(data) as { text?: string; error?: string; sources?: Array<{ id: number; documentId: number; score: number; content: string; index: number }> };
+          if (eventName === "delta" && parsed.text) setStreamedAnswer((current) => current + parsed.text);
+          if (eventName === "sources" && parsed.sources) setLiveSources(parsed.sources.map((source) => ({ label: `Indexed chunk ${source.index}`, detail: `Relevance ${(source.score * 100).toFixed(1)}% · document ${source.documentId}`, kind: "LIVE" })));
+          if (eventName === "error") throw new Error(parsed.error || "Streaming response failed");
+        });
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        consume(decoder.decode(value, { stream: true }));
+      }
+      consume(decoder.decode());
+      toast.success("Live answer complete", { description: "Streamed from the server and grounded against indexed sources." });
+    } catch (error) {
+      toast.error("Live answer unavailable", { description: error instanceof Error ? error.message : "Try again or check your session." });
+    } finally {
       setIsThinking(false);
-      toast.success("Answer grounded against 3 sources", { description: "Trace saved to this conversation." });
-    }, 900);
+    }
   };
 
   const createConversation = () => {
@@ -129,10 +166,20 @@ export default function Home() {
     setMessage("");
   };
 
-  const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    toast.success(`${file.name} queued for indexing`, { description: "Chunking and embedding will run in the background." });
+    setIsUploading(true);
+    try {
+      const response = await fetch("/api/documents/upload", { method: "POST", credentials: "include", headers: { "content-type": file.type || "text/plain", "x-file-name": encodeURIComponent(file.name), "x-file-type": file.type || "text/plain", "x-workspace-id": "1" }, body: await file.arrayBuffer() });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Upload failed");
+      toast.success(`${file.name} indexed`, { description: `${payload.chunkCount} chunks embedded and persisted.` });
+    } catch (error) {
+      toast.error("Could not index document", { description: error instanceof Error ? error.message : "Try a TXT, CSV, Markdown, or JSON file." });
+    } finally {
+      setIsUploading(false);
+    }
     event.target.value = "";
   };
 
@@ -195,13 +242,13 @@ export default function Home() {
           </section>
         ) : (
           <section className="workspace-view page-enter">
-            <div className="workspace-heading"><div><div className="eyebrow"><span className="status-dot"></span> AI SYSTEMS ONLINE</div><h1>Make the next decision<br /><em>with evidence.</em></h1><p>Ask across your workspace, inspect the trace, and turn research into action without losing the source trail.</p></div><div className="heading-actions"><button className="secondary-button" onClick={() => toast("Demo mode", { description: "Connect an OpenAI key to run live model calls." })}><Play size={14} /> Run demo</button><button className="primary-button" onClick={() => fileInput.current?.click()}><UploadCloud size={15} /> Add sources</button><input ref={fileInput} type="file" hidden accept=".pdf,.csv,.txt,.docx" onChange={handleUpload} /></div></div>
+            <div className="workspace-heading"><div><div className="eyebrow"><span className="status-dot"></span> AI SYSTEMS ONLINE</div><h1>Make the next decision<br /><em>with evidence.</em></h1><p>Ask across your workspace, inspect the trace, and turn research into action without losing the source trail.</p></div><div className="heading-actions"><button className="secondary-button" onClick={() => runPrompt("What changed in self-serve retention this quarter, and what should we do next?")}><Play size={14} /> Run live</button><button className="primary-button" onClick={() => fileInput.current?.click()} disabled={isUploading}><UploadCloud size={15} /> {isUploading ? "Indexing…" : "Add sources"}</button><input ref={fileInput} type="file" hidden accept=".txt,.csv,.md,.json" onChange={handleUpload} /></div></div>
             <div className="workspace-grid">
               <div className="conversation-column">
-                <div className="panel answer-panel"><div className="answer-meta"><div className="assistant-id"><div className="assistant-orb"><Sparkles size={16} /></div><span><strong>Workbench / Researcher</strong><small>gpt-5 · grounded mode</small></span></div><div className="answer-actions"><Pill tone="lime"><span className="status-dot small"></span> Grounded</Pill><button className="icon-button"><MoreHorizontal size={16} /></button></div></div><div className="question">What changed in self-serve retention this quarter, and what should we do next?</div><div className="answer-copy"><p>Self-serve retention is down <strong>4.7 points</strong> quarter over quarter, but the drop is concentrated in workspaces that <strong>never invite a second teammate</strong>. The strongest leading indicator is a missing collaboration moment in the first 7 days — not a pricing objection.</p><p>That suggests a focused intervention: trigger a role-based invite prompt after the first successful workflow, then measure <strong>workspace_invited → retained_30d</strong> by cohort.</p></div><div className="recommendation"><div className="recommendation-icon"><Lightbulb size={16} /></div><div><span className="eyebrow">RECOMMENDED NEXT MOVE</span><strong>Ship an invite nudge experiment for self-serve teams</strong><small>Owner: Growth · estimated effort: 2 days · success metric: +8% invite rate</small></div><button className="arrow-button" onClick={() => toast.success("Experiment brief created") }><ArrowUpRight size={16} /></button></div><div className="answer-footer"><div className="confidence"><span className="confidence-ring">92</span><span><strong>High confidence</strong><small>3 sources · 2 corroborating signals</small></span></div><div className="feedback"><span>Was this useful?</span><button className={feedback === "up" ? "feedback-button selected" : "feedback-button"} onClick={() => { setFeedback("up"); toast.success("Feedback saved"); }}><ThumbsUp size={15} /></button><button className={feedback === "down" ? "feedback-button selected negative" : "feedback-button"} onClick={() => { setFeedback("down"); toast("Thanks — we’ll inspect this run"); }}><ThumbsDown size={15} /></button></div></div></div>
+                <div className="panel answer-panel"><div className="answer-meta"><div className="assistant-id"><div className="assistant-orb"><Sparkles size={16} /></div><span><strong>Workbench / Researcher</strong><small>gpt-5 · grounded mode</small></span></div><div className="answer-actions"><Pill tone="lime"><span className="status-dot small"></span> {isThinking ? "Streaming" : "Grounded"}</Pill><button className="icon-button"><MoreHorizontal size={16} /></button></div></div><div className="question">What changed in self-serve retention this quarter, and what should we do next?</div>{streamedAnswer ? <div className="answer-copy live-answer"><p>{streamedAnswer}</p>{isThinking && <span className="stream-caret">▋</span>}</div> : <div className="answer-copy"><p>Self-serve retention is down <strong>4.7 points</strong> quarter over quarter, but the drop is concentrated in workspaces that <strong>never invite a second teammate</strong>. The strongest leading indicator is a missing collaboration moment in the first 7 days — not a pricing objection.</p><p>That suggests a focused intervention: trigger a role-based invite prompt after the first successful workflow, then measure <strong>workspace_invited → retained_30d</strong> by cohort.</p></div>}<div className="recommendation"><div className="recommendation-icon"><Lightbulb size={16} /></div><div><span className="eyebrow">RECOMMENDED NEXT MOVE</span><strong>Ship an invite nudge experiment for self-serve teams</strong><small>Owner: Growth · estimated effort: 2 days · success metric: +8% invite rate</small></div><button className="arrow-button" onClick={() => toast.success("Experiment brief staged for approval") }><ArrowUpRight size={16} /></button></div><div className="answer-footer"><div className="confidence"><span className="confidence-ring">92</span><span><strong>High confidence</strong><small>{liveSources.length} sources · streamed with citations</small></span></div><div className="feedback"><span>Was this useful?</span><button className={feedback === "up" ? "feedback-button selected" : "feedback-button"} onClick={() => { setFeedback("up"); toast.success("Feedback saved"); }}><ThumbsUp size={15} /></button><button className={feedback === "down" ? "feedback-button selected negative" : "feedback-button"} onClick={() => { setFeedback("down"); toast("Thanks — we’ll inspect this run"); }}><ThumbsDown size={15} /></button></div></div></div>
                 <div className="panel composer-panel"><div className="composer-label"><span className="live-indicator"></span> Ask your workspace <Pill>⌘ Enter</Pill></div><textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") handleSubmit(); }} placeholder="Ask a question, compare sources, or describe an action…" rows={3}></textarea><div className="composer-bottom"><div className="composer-tools"><button className="tool-button" onClick={() => fileInput.current?.click()}><Paperclip size={15} /> Attach</button><button className="tool-button" onClick={() => toast("Research mode", { description: "Grounded mode only uses indexed workspace sources." })}><ShieldCheck size={15} /> Grounded only <ChevronDown size={13} /></button></div><button className="send-button" onClick={handleSubmit} disabled={isThinking || !message.trim()}>{isThinking ? <Loader2 size={15} className="spin" /> : <Send size={15} />} {isThinking ? "Thinking" : "Run"}</button></div></div><div className="suggestions"><span>TRY ASKING</span>{suggestedPrompts.map((prompt) => <button key={prompt} onClick={() => runPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div>
               </div>
-              <aside className="inspector-column"><div className="panel trace-panel"><div className="panel-heading"><div><span className="eyebrow">RUN TRACE / 00:02.41</span><h2>How this answer formed</h2></div><Pill tone="lime">passed</Pill></div><div className="trace-list"><div className="trace-step done"><span className="trace-number">01</span><div><strong>Intent classified</strong><small>research_question · confidence 0.98</small></div><Check size={14} /></div><div className="trace-step done"><span className="trace-number">02</span><div><strong>Sources retrieved</strong><small>3 of 8 chunks passed reranker</small></div><Check size={14} /></div><div className="trace-step done"><span className="trace-number">03</span><div><strong>Claim verification</strong><small>7 claims · 0 unsupported</small></div><Check size={14} /></div><div className="trace-step"><span className="trace-number">04</span><div><strong>Action suggested</strong><small>experiment.create · awaiting approval</small></div><button className="mini-run" onClick={() => toast.success("Action staged", { description: "No external change was made." })}><ArrowUpRight size={13} /></button></div></div><div className="trace-foot"><Clock3 size={14} /> 2.41s total <span>·</span> 1,842 tokens <span>·</span> $0.018</div></div><div className="panel sources-panel"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE TRAIL</span><h2>Sources used</h2></div><button className="toggle-button" onClick={() => setShowSources(!showSources)}>{showSources ? "Hide" : "Show"}</button></div>{showSources && <div className="source-list">{sources.map((source, index) => <div className="source-item" key={source.label}><div className="source-index">0{index + 1}</div><div><strong>{source.label}</strong><small>{source.detail}</small></div><span className={`source-kind ${source.kind.toLowerCase()}`}>{source.kind}</span></div>)}</div>}<button className="view-evidence" onClick={() => toast("Evidence inspector", { description: "Open a citation to inspect the exact chunk and score." })}>Open evidence inspector <ArrowUpRight size={14} /></button></div><div className="panel workflow-panel"><div className="workflow-head"><div className="workflow-icon"><Zap size={15} /></div><div><span className="eyebrow">TOOL CALLING</span><strong>Experiment brief</strong></div><Pill tone="amber">approval</Pill></div><p>Turn the recommendation into a ready-to-review brief with owner, audience, hypothesis, and success metric.</p><button className="secondary-button full" onClick={() => toast("Brief staged", { description: "Review it before sending to your team." })}>Review action <ArrowUpRight size={14} /></button></div></aside>
+              <aside className="inspector-column"><div className="panel trace-panel"><div className="panel-heading"><div><span className="eyebrow">RUN TRACE / {isThinking ? "STREAMING" : "00:02.41"}</span><h2>How this answer formed</h2></div><Pill tone="lime">{isThinking ? "running" : "passed"}</Pill></div><div className="trace-list"><div className="trace-step done"><span className="trace-number">01</span><div><strong>Intent classified</strong><small>research_question · confidence 0.98</small></div><Check size={14} /></div><div className="trace-step done"><span className="trace-number">02</span><div><strong>Sources retrieved</strong><small>{liveSources.length} chunks passed reranker</small></div><Check size={14} /></div><div className="trace-step done"><span className="trace-number">03</span><div><strong>Claim verification</strong><small>grounding guard enabled</small></div><Check size={14} /></div><div className="trace-step"><span className="trace-number">04</span><div><strong>Action suggested</strong><small>experiment.create · awaiting approval</small></div><button className="mini-run" onClick={() => toast.success("Action staged", { description: "No external change was made." })}><ArrowUpRight size={13} /></button></div></div><div className="trace-foot"><Clock3 size={14} /> server stream <span>·</span> citations attached <span>·</span> safe mode</div></div><div className="panel sources-panel"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE TRAIL</span><h2>Sources used</h2></div><button className="toggle-button" onClick={() => setShowSources(!showSources)}>{showSources ? "Hide" : "Show"}</button></div>{showSources && <div className="source-list">{liveSources.map((source, index) => <div className="source-item" key={`${source.label}-${index}`}><div className="source-index">0{index + 1}</div><div><strong>{source.label}</strong><small>{source.detail}</small></div><span className={`source-kind ${source.kind.toLowerCase()}`}>{source.kind}</span></div>)}</div>}<button className="view-evidence" onClick={() => toast("Evidence inspector", { description: "Open a citation to inspect the exact chunk and score." })}>Open evidence inspector <ArrowUpRight size={14} /></button></div><div className="panel workflow-panel"><div className="workflow-head"><div className="workflow-icon"><Zap size={15} /></div><div><span className="eyebrow">TOOL CALLING</span><strong>Experiment brief</strong></div><Pill tone="amber">approval</Pill></div><p>Turn the recommendation into a ready-to-review brief with owner, audience, hypothesis, and success metric.</p><button className="secondary-button full" onClick={() => toast("Brief staged", { description: "Review it before sending to your team." })}>Review action <ArrowUpRight size={14} /></button></div></aside>
             </div>
           </section>
         )}

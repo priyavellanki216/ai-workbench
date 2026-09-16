@@ -15,6 +15,13 @@
       "when": 1789547153530,
       "tag": "0001_nasty_wonder_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1789547505577,
+      "tag": "0002_sturdy_tattoo",
+      "breakpoints": true
     }
   ]
 }

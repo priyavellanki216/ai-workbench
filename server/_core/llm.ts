@@ -452,3 +452,88 @@ export async function listLLMModels(): Promise<ModelsResponse> {
 
   return (await response.json()) as ModelsResponse;
 }
+
+export async function createEmbedding(input: string, model = "text-embedding-3-small"): Promise<number[]> {
+  assertApiKey();
+  const url = ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
+    ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/embeddings`
+    : "https://forge.manus.im/v1/embeddings";
+  const response = await fetchWithBackoff(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${ENV.forgeApiKey}`,
+    },
+    body: JSON.stringify({ model, input }),
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Embedding request failed: ${response.status} ${errorText}`);
+  }
+  const payload = await response.json() as { data?: Array<{ embedding?: number[] }> };
+  const embedding = payload.data?.[0]?.embedding;
+  if (!embedding) throw new Error("Embedding response did not include a vector");
+  return embedding;
+}
+
+export type StreamDelta = { text?: string; finishReason?: string | null };
+
+export async function streamLLM(
+  params: InvokeParams,
+  onDelta: (delta: StreamDelta) => void,
+): Promise<void> {
+  assertApiKey();
+  const payload: Record<string, unknown> = {
+    messages: params.messages.map(normalizeMessage),
+    stream: true,
+  };
+  if (params.model) payload.model = params.model;
+  if (typeof (params.max_tokens ?? params.maxTokens) === "number") payload.max_tokens = params.max_tokens ?? params.maxTokens;
+  if (params.tools?.length) payload.tools = params.tools;
+  const toolChoice = normalizeToolChoice(params.toolChoice || params.tool_choice, params.tools);
+  if (toolChoice) payload.tool_choice = toolChoice;
+  const responseFormat = normalizeResponseFormat({
+    responseFormat: params.responseFormat,
+    response_format: params.response_format,
+    outputSchema: params.outputSchema,
+    output_schema: params.output_schema,
+  });
+  if (responseFormat) payload.response_format = responseFormat;
+  const response = await fetchWithBackoff(resolveApiUrl(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${ENV.forgeApiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    const errorText = await response.text();
+    throw new Error(`LLM stream failed: ${response.status} ${errorText}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const consume = (raw: string) => {
+    buffer += raw;
+    const events = buffer.split(/\n\n/);
+    buffer = events.pop() ?? "";
+    for (const event of events) {
+      const data = event.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }> };
+        const choice = parsed.choices?.[0];
+        onDelta({ text: choice?.delta?.content, finishReason: choice?.finish_reason });
+      } catch {
+        // Ignore keep-alive frames and provider comments.
+      }
+    }
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    consume(decoder.decode(value, { stream: true }));
+  }
+  consume(decoder.decode());
+}

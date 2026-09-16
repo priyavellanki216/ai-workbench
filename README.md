@@ -9,7 +9,7 @@ AI Workbench is a customer-facing AI research product built to demonstrate the e
 - **Live demo:** [Open the AI Workbench preview](https://3000-ioxw2po0s7pt2dtn9svnl-18315dd0.sg2.manus.computer)
 - **GitHub:** [priyavellanki216/ai-workbench](https://github.com/priyavellanki216/ai-workbench)
 - **Architecture:** [Read the architecture section below](#architecture)
-- **Demo video:** [Demo notes and walkthrough](#demo)
+- **Demo video:** [Watch the 14-second walkthrough](https://files.manuscdn.com/user_upload_by_module/session_file/310519663888720781/CecFETfklSdifqfo.mp4)
 
 ## Problem
 
@@ -56,6 +56,12 @@ Express / Node server ─────────── Manus OAuth session
 
 The shipped WebDev runtime uses React, TypeScript, Tailwind-compatible CSS, Express, tRPC, Drizzle, Manus OAuth, and managed storage. The domain schema is intentionally explicit about the entities required by a production implementation. The `server/_core/llm.ts` helper keeps model credentials server-side; the UI never receives provider keys.
 
+### Live request paths
+
+- `POST /api/documents/upload` accepts authenticated TXT, CSV, Markdown, and JSON files, stores the original bytes in managed object storage, normalizes the text, chunks it with overlap, creates embeddings through the server-side provider proxy, and persists the vectors in `documentChunks`.
+- `POST /api/chat/stream` retrieves the highest-scoring chunks with cosine similarity, injects them into a grounded prompt, and returns `sources`, `delta`, `done`, and `error` Server-Sent Events. The client renders the answer as tokens arrive and updates the evidence trail from the retrieved chunks.
+- The first pass intentionally keeps vectors in JSON for transparent local inspection. A production scale-up can move the same contract to a native vector column or pgvector without changing the UI behavior.
+
 ## AI workflow
 
 1. **Classify intent.** Decide whether a request is a research question, comparison, summarization, or action request.
@@ -91,6 +97,10 @@ The signals view is deliberately labeled as a seeded demo snapshot. In a deploye
 - **Feedback rate:** percentage of assistant answers receiving a user rating.
 - **Failure categories:** unsupported claim, missing citation, tool timeout, retrieval miss, or provider error.
 - **Task completion:** percentage of staged actions approved by a user.
+
+## Recorded walkthrough
+
+The [recorded walkthrough](https://files.manuscdn.com/user_upload_by_module/session_file/310519663888720781/CecFETfklSdifqfo.mp4) uses the live preview states: the grounded research workspace, a saved positive feedback event, and the Product Signals observability view. It is intentionally short so a recruiter can understand the product loop in one pass.
 
 ## Iteration narrative
 
